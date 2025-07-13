@@ -1,0 +1,477 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scopus Cluster Explorer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    h1 {
+      font-size: 24px;
+      font-weight: bold;
+      margin: 10px 0 5px;
+      text-align: center;
+    }
+    h2 {
+      font-size: 16px;
+      font-style: italic;
+      color: #555;
+      margin: 0 0 20px;
+      text-align: center;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+      margin: 5px;
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+    select {
+      padding: 10px;
+      font-size: 16px;
+      margin: 5px;
+      width: 200px;
+    }
+    select:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+    #output {
+      margin-top: 20px;
+      max-width: 1000px;
+      width: 100%;
+    }
+    .table-caption {
+      font-size: 18px;
+      font-weight: bold;
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      text-align: left;
+    }
+    th {
+      background-color: #f2f2f2;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    th.sortable:hover {
+      background-color: #e0e0e0;
+    }
+    tr:nth-child(even) {
+      background-color: #f9f9f9;
+    }
+    a {
+      color: #0066cc;
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <h1>Scopus Cluster Explorer</h1>
+  <h2>Ikbal Maulana @2025</h2>
+  <input type="file" id="gmlInput" accept=".gml" style="display: none;">
+  <button onclick="document.getElementById('gmlInput').click()">Select GML</button>
+  <input type="file" id="csvInput" accept=".csv" style="display: none;">
+  <button id="csvButton" disabled onclick="document.getElementById('csvInput').click()">Read CSV</button>
+  <button id="saveButton" disabled onclick="saveTableAsCSV()">Save</button>
+  <select id="clusterSelect" disabled>
+    <option value="">Select Cluster</option>
+  </select>
+  <div id="output"></div>
+
+  <script>
+    let articles = [];
+    let sortColumn = null;
+    let sortDirection = 'desc';
+
+    const articleTemplate = {
+      authors: '',
+      title: '',
+      cluster: '',
+      year: '',
+      url: '',
+      abstract: '',
+      authorKeywords: '',
+      citedBy: ''
+    };
+
+    document.getElementById('gmlInput').addEventListener('change', handleGMLFileSelect);
+    document.getElementById('csvInput').addEventListener('change', handleCSVFileSelect);
+    document.getElementById('clusterSelect').addEventListener('change', handleClusterSelect);
+
+    function handleGMLFileSelect(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const text = e.target.result;
+        try {
+          parseGML(text);
+          document.getElementById('csvButton').disabled = false;
+          document.getElementById('saveButton').disabled = false;
+        } catch (error) {
+          console.error('Error parsing GML file:', error);
+          document.getElementById('output').innerHTML = '<p>Error parsing GML file. Check console for details.</p>';
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    function handleCSVFileSelect(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const text = e.target.result;
+        parseCSV(text);
+        populateClusterDropdown();
+        displayArticles(articles);
+      };
+      reader.readAsText(file);
+    }
+
+    function handleClusterSelect(event) {
+      const selectedCluster = event.target.value;
+      const filteredArticles = selectedCluster
+        ? articles.filter(article => article.cluster === selectedCluster)
+        : articles;
+      displayArticles(filteredArticles, selectedCluster);
+    }
+
+    function parseGML(text) {
+      const lines = text.split('\n').map(line => line.trim());
+      let currentNode = null;
+      articles = [];
+      let inNode = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        try {
+          if (line === 'node') {
+            inNode = true;
+            currentNode = {};
+          } else if (line === '[' && inNode) {
+            continue;
+          } else if (line === ']' && inNode) {
+            inNode = false;
+            if (currentNode.description && currentNode.cluster) {
+              const parsedDescription = parseDescription(currentNode.description);
+              const yearMatch = currentNode.label ? currentNode.label.match(/\((\d{4})\)/) : null;
+              articles.push({
+                authors: parsedDescription.authors || '',
+                title: parsedDescription.title || '',
+                cluster: currentNode.cluster || '',
+                year: yearMatch ? yearMatch[1] : '',
+                url: currentNode.url || '',
+                abstract: '',
+                authorKeywords: '',
+                citedBy: ''
+              });
+            } else {
+              console.warn(`Skipping node at line ${i + 1}: missing description or cluster`);
+            }
+            currentNode = null;
+          } else if (inNode && currentNode) {
+            const [key, ...valueParts] = line.split(' ');
+            const value = valueParts.join(' ').replace(/^"|"$/g, '');
+            if (key && value !== undefined) {
+              currentNode[key] = value;
+            } else {
+              console.warn(`Invalid line at ${i + 1}: ${line}`);
+            }
+          }
+        } catch (error) {
+          console.error(`Error processing line ${i + 1}: ${line}`, error);
+        }
+      }
+
+      console.log('Parsed GML articles:', articles);
+      displayArticles(articles);
+    }
+
+    function parseDescription(description) {
+      try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(description, 'text/html');
+        const rows = doc.querySelectorAll('tr');
+        const result = {};
+
+        rows.forEach(row => {
+          const cells = row.querySelectorAll('td');
+          if (cells.length >= 2) {
+            const key = cells[0].textContent.trim().replace(':', '');
+            let value = cells[1].textContent.trim();
+            if (key === 'Authors') {
+              value = abbreviateAuthors(value);
+              result.authors = value;
+            }
+            if (key === 'Title') result.title = value;
+          }
+        });
+
+        return result;
+      } catch (error) {
+        console.error('Error parsing description:', description, error);
+        return {};
+      }
+    }
+
+    function abbreviateAuthors(authors) {
+      return authors.split(';').map(author => {
+        const [familyName, givenName] = author.trim().split(',').map(part => part.trim());
+        if (givenName) {
+          // Check if givenName is already abbreviated (e.g., "T.O.", "O.", "J.-A.")
+          const isAbbreviated = givenName.match(/^[A-Za-z](?:\.-?[A-Za-z])*\.$/);
+          if (isAbbreviated) {
+            return `${familyName} ${givenName}`;
+          }
+          // Split on spaces or hyphens for non-abbreviated names
+          const nameParts = givenName.split(/[\s-]+/);
+          const isHyphenated = givenName.includes('-');
+          // For hyphenated names, use 'j.-a.'; for spaces, use 'j.p.'
+          const abbreviatedGiven = nameParts
+            .map(name => name[0].toLowerCase())
+            .join(isHyphenated ? '.-' : '.') + '.';
+          return `${familyName} ${abbreviatedGiven}`;
+        }
+        return familyName;
+      }).join('; ');
+    }
+
+    function parseCSV(text) {
+      const result = Papa.parse(text, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: header => header.trim().toLowerCase(),
+        transform: value => value.trim()
+      });
+
+      if (result.errors.length > 0) {
+        console.error('CSV parsing errors:', result.errors);
+        return;
+      }
+
+      const csvEntries = result.data;
+      console.log('Parsed CSV entries:', csvEntries);
+
+      if (!csvEntries.length) {
+        console.warn('CSV file is empty or has no valid rows.');
+        return;
+      }
+
+      const requiredColumns = ['authors', 'title', 'abstract', 'author keywords', 'cited by'];
+      const headers = Object.keys(csvEntries[0]);
+      if (!requiredColumns.every(col => headers.includes(col))) {
+        console.error('CSV missing required columns:', requiredColumns.filter(col => !headers.includes(col)));
+        return;
+      }
+
+      articles = articles.map(article => {
+        let abstract = 'authors and title do not match';
+        let authorKeywords = '';
+        let citedBy = '';
+        for (const csvEntry of csvEntries) {
+          const csvAuthors = abbreviateAuthors(csvEntry.authors);
+          const authorsMatch = article.authors.toLowerCase() === csvAuthors.toLowerCase();
+          const titleMatch = article.title.toLowerCase() === csvEntry.title.toLowerCase();
+
+          if (authorsMatch && titleMatch) {
+            abstract = csvEntry.abstract || '';
+            authorKeywords = csvEntry['author keywords'] || '';
+            citedBy = csvEntry['cited by'] || '';
+            break;
+          } else if (authorsMatch && !titleMatch) {
+            abstract = 'title does not match';
+          } else if (!authorsMatch && titleMatch) {
+            abstract = 'authors do not match';
+          }
+        }
+        return { ...article, abstract, authorKeywords, citedBy };
+      });
+
+      console.log('Updated articles after CSV matching:', articles);
+    }
+
+    function populateClusterDropdown() {
+      const clusterSelect = document.getElementById('clusterSelect');
+      const clusters = [...new Set(articles.map(article => article.cluster))].sort();
+      clusterSelect.innerHTML = '<option value="">Select Cluster</option>';
+      clusters.forEach(cluster => {
+        const option = document.createElement('option');
+        option.value = cluster;
+        option.textContent = cluster;
+        clusterSelect.appendChild(option);
+      });
+      clusterSelect.disabled = false;
+    }
+
+    function saveTableAsCSV() {
+      const clusterSelect = document.getElementById('clusterSelect');
+      const selectedCluster = clusterSelect.value;
+      const filteredArticles = selectedCluster
+        ? articles.filter(article => article.cluster === selectedCluster)
+        : articles;
+      const caption = selectedCluster ? `Cluster ${selectedCluster} (${filteredArticles.length})` : `All (${filteredArticles.length})`;
+
+      const csvData = filteredArticles.map(article => ({
+        Authors: article.authors || '-',
+        Year: article.year || '-',
+        Title: article.title || '-',
+        Abstract: article.abstract || '-',
+        'Author Keywords': article.authorKeywords || '-',
+        'Cited by': article.citedBy || '-',
+        URL: article.url || '-'
+      }));
+
+      const csv = Papa.unparse(csvData);
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `${caption}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    function sortArticles(articles, column) {
+      if (sortColumn === column) {
+        sortDirection = sortDirection === 'desc' ? 'asc' : 'desc';
+      } else {
+        sortColumn = column;
+        sortDirection = 'desc';
+      }
+
+      return [...articles].sort((a, b) => {
+        let aValue = column === 'year' ? (a.year || '0') : (a.citedBy || '0');
+        let bValue = column === 'year' ? (b.year || '0') : (b.citedBy || '0');
+
+        if (column === 'citedBy') {
+          aValue = parseInt(aValue, 10) || 0;
+          bValue = parseInt(bValue, 10) || 0;
+        }
+
+        if (sortDirection === 'desc') {
+          return bValue > aValue ? 1 : bValue < aValue ? -1 : 0;
+        } else {
+          return aValue > bValue ? 1 : aValue < bValue ? -1 : 0;
+        }
+      });
+    }
+
+    function displayArticles(articles, selectedCluster = '') {
+      const output = document.getElementById('output');
+      if (articles.length === 0) {
+        output.innerHTML = '<p>No articles found.</p>';
+        return;
+      }
+
+      const caption = document.createElement('div');
+      caption.className = 'table-caption';
+      caption.textContent = selectedCluster ? `Cluster ${selectedCluster} (${articles.length})` : `All (${articles.length})`;
+
+      const table = document.createElement('table');
+      const headerRow = document.createElement('tr');
+      const headers = ['Authors', 'Year', 'Title', 'Abstract', 'Author Keywords', 'Cited by', 'URL'];
+      headers.forEach(header => {
+        const th = document.createElement('th');
+        th.textContent = header;
+        if (header === 'Year' || header === 'Cited by') {
+          th.className = 'sortable';
+          th.addEventListener('click', () => {
+            const column = header === 'Year' ? 'year' : 'citedBy';
+            const sortedArticles = sortArticles(articles, column);
+            displayArticles(sortedArticles, selectedCluster);
+          });
+        }
+        headerRow.appendChild(th);
+      });
+      table.appendChild(headerRow);
+
+      articles.forEach(article => {
+        const row = document.createElement('tr');
+        const cells = [
+          article.authors || '-',
+          article.year || '-',
+          article.title || '-',
+          article.abstract || '-',
+          article.authorKeywords || '-',
+          article.citedBy || '-',
+          article.url ? `<a href="${article.url}" target="_blank">Link</a>` : '-'
+        ];
+        cells.forEach(cellContent => {
+          const td = document.createElement('td');
+          td.innerHTML = cellContent;
+          row.appendChild(td);
+        });
+        table.appendChild(row);
+      });
+
+      output.innerHTML = '';
+      output.appendChild(caption);
+      output.appendChild(table);
+    }
+  </script>
+</body>
+</html>
